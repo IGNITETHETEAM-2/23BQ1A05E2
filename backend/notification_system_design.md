@@ -1,154 +1,206 @@
 # Notification System Design
 
-## Overview
+---
 
-This document describes the architecture and design of a scalable notification system supporting **email**, **push**, and **in-app** notification channels.
+# Stage 1
+
+## 1. Core Actions
+
+* Create Notification
+* Get User Notifications
+* Mark Notification as Read
+* Mark All as Read
+* Delete Notification
+* Get Unread Count
 
 ---
 
-## System Components
+## 2. REST API Design
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Client Applications                       │
-│              (Web App / Mobile App / Admin Panel)                │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │ REST / WebSocket
-┌───────────────────────────▼─────────────────────────────────────┐
-│                    API Gateway / Load Balancer                   │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │
-        ┌───────────────────┼──────────────────┐
-        │                   │                  │
-┌───────▼──────┐   ┌────────▼──────┐  ┌───────▼──────────┐
-│  User Service │   │  Notification │  │  Vehicle Maint.  │
-│              │   │   Service     │  │  Scheduler Svc   │
-└───────┬──────┘   └────────┬──────┘  └───────┬──────────┘
-        │                   │                  │
-        └───────────────────▼──────────────────┘
-                            │
-                 ┌──────────▼──────────┐
-                 │    Message Queue    │
-                 │  (Redis / RabbitMQ) │
-                 └──────────┬──────────┘
-                            │
-          ┌─────────────────┼──────────────────┐
-          │                 │                  │
-  ┌───────▼──────┐  ┌───────▼──────┐  ┌───────▼──────┐
-  │ Email Worker │  │ Push Worker  │  │ In-App Worker│
-  │ (Nodemailer) │  │ (FCM / APNs) │  │  (WebSocket) │
-  └──────────────┘  └──────────────┘  └──────────────┘
+```http
+POST    /api/notifications
+GET     /api/notifications
+GET     /api/notifications/:id
+PATCH   /api/notifications/:id/read
+PATCH   /api/notifications/read-all
+DELETE  /api/notifications/:id
+GET     /api/notifications/unread-count
 ```
 
 ---
 
-## Notification Types
+## 3. Request / Response Contracts
 
-| Type      | Channel      | Trigger                              |
-|-----------|--------------|--------------------------------------|
-| `info`    | In-App       | General updates                      |
-| `warning` | In-App, Email| Upcoming maintenance due             |
-| `error`   | Email, Push  | Critical system failure              |
-| `success` | In-App       | Maintenance completed confirmation   |
+### Request Example
 
----
-
-## Data Models
-
-### Notification
 ```json
 {
-  "_id": "ObjectId",
-  "userId": "ObjectId (ref: User)",
-  "title": "string",
-  "message": "string",
-  "type": "info | warning | error | success",
-  "isRead": "boolean",
-  "createdAt": "Date",
-  "updatedAt": "Date"
+  "userId": "123",
+  "title": "Service Reminder",
+  "message": "Your vehicle service is due.",
+  "type": "reminder"
 }
 ```
 
-### User Notification Preferences
+### Response Example
+
 ```json
 {
-  "userId": "ObjectId",
-  "emailNotifications": "boolean",
-  "pushNotifications": "boolean",
-  "inAppNotifications": "boolean"
+  "success": true,
+  "data": {
+    "id": "n101",
+    "title": "Service Reminder"
+  }
 }
 ```
 
 ---
 
-## API Design
+## 4. Headers
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+```
+
+---
+
+## 5. Real-Time Notification Design
+
+### Architecture
+
+```
+Client ↔ WebSocket ↔ Notification Server
+```
+
+or using **Socket.IO**:
+
+```
+Client ↔ Socket.IO ↔ Notification Server
+```
+
+### Flow
+
+```
+New Notification
+      ↓
+Store in DB
+      ↓
+Emit Socket Event
+      ↓
+Frontend Updates Instantly
+```
+
+---
+
+# Stage 2
+
+## 1. Database Choice
+
+**Recommended: MongoDB**
+
+| Reason            | Detail                                 |
+|-------------------|----------------------------------------|
+| JSON-based        | Maps directly to JavaScript objects    |
+| Flexible schema   | Easy to add/remove fields              |
+| Fast reads/writes | Optimised for high-throughput workloads|
+| Easy scaling      | Built-in horizontal scaling support    |
+
+---
+
+## 2. Schema
+
+```javascript
+Notification {
+  _id,        // ObjectId - unique identifier
+  userId,     // ObjectId - reference to User
+  title,      // String   - notification title
+  message,    // String   - notification body
+  type,       // String   - "reminder" | "info" | "warning" | "error" | "success"
+  isRead,     // Boolean  - read status (default: false)
+  createdAt   // Date     - auto-generated timestamp
+}
+```
+
+---
+
+## 3. Database Queries
 
 ### Create Notification
-```
-POST /api/notifications
-Body: { userId, title, message, type }
-Response: 201 { success: true, data: Notification }
+
+```javascript
+db.notifications.insertOne({
+  userId: "123",
+  title: "Service Reminder",
+  message: "Your vehicle service is due.",
+  type: "reminder",
+  isRead: false,
+  createdAt: new Date()
+})
 ```
 
-### Get User Notifications
-```
-GET /api/notifications/:userId
-Response: 200 { success: true, data: [Notification] }
+### Get All Notifications for a User
+
+```javascript
+db.notifications.find({ userId })
 ```
 
-### Mark as Read
+### Get Unread Count
+
+```javascript
+db.notifications.countDocuments({
+  userId,
+  isRead: false
+})
 ```
-PUT /api/notifications/:id/read
-Response: 200 { success: true, data: Notification }
+
+### Mark Notification as Read
+
+```javascript
+db.notifications.updateOne(
+  { _id },
+  { $set: { isRead: true } }
+)
+```
+
+### Mark All as Read
+
+```javascript
+db.notifications.updateMany(
+  { userId, isRead: false },
+  { $set: { isRead: true } }
+)
 ```
 
 ### Delete Notification
-```
-DELETE /api/notifications/:id
-Response: 200 { success: true, message: "Notification deleted" }
-```
 
----
-
-## Delivery Flow
-
-```
-1. Event occurs (e.g., maintenance due soon)
-      ↓
-2. Service publishes event to Message Queue
-      ↓
-3. Notification Worker picks up event
-      ↓
-4. Check User Preferences
-      ↓
-5a. Send Email (if enabled) → via Nodemailer / SendGrid
-5b. Send Push (if enabled) → via Firebase FCM
-5c. Save In-App Notification → to MongoDB
-      ↓
-6. Mark notification as delivered
+```javascript
+db.notifications.deleteOne({ _id })
 ```
 
 ---
 
-## Scalability Considerations
+## 4. Scaling Challenges
 
-- **Horizontal scaling**: Workers can scale independently
-- **Message Queue**: Decouples producers from consumers; handles burst traffic
-- **Rate Limiting**: Prevent notification spam per user (max N/hour)
-- **Retry Logic**: Failed deliveries are retried with exponential backoff
-- **Read Receipts**: Track which notifications were opened
+* **Large notification volume** — millions of records accumulate over time
+* **Slow queries** — unindexed lookups on large collections degrade performance
+* **Increased storage** — historical notifications consume growing disk space
 
 ---
 
-## Technology Stack
+## 5. Solutions
 
-| Component     | Technology              |
-|---------------|-------------------------|
-| Backend API   | Node.js + Express       |
-| Database      | MongoDB (Mongoose)      |
-| Queue         | Redis / RabbitMQ        |
-| Email         | Nodemailer / SendGrid   |
-| Push          | Firebase FCM            |
-| Real-time     | Socket.IO (WebSocket)   |
-| Auth          | JWT (JSON Web Tokens)   |
-| Scheduler     | node-cron               |
+| Problem                  | Solution                                |
+|--------------------------|-----------------------------------------|
+| Slow `userId` lookups    | Index on `userId`                       |
+| Slow time-based queries  | Index on `createdAt`                    |
+| Large result sets        | Pagination (limit + skip / cursor)      |
+| Storage bloat            | Archive old notifications to cold store |
+| High write throughput    | Database sharding by `userId`           |
+
+```javascript
+// Recommended Indexes
+db.notifications.createIndex({ userId: 1 })
+db.notifications.createIndex({ createdAt: -1 })
+db.notifications.createIndex({ userId: 1, isRead: 1 })
+```
