@@ -204,3 +204,125 @@ db.notifications.createIndex({ userId: 1 })
 db.notifications.createIndex({ createdAt: -1 })
 db.notifications.createIndex({ userId: 1, isRead: 1 })
 ```
+
+---
+
+# Stage 3
+
+## Query Analysis
+
+### Current Query
+
+```sql
+SELECT *
+FROM notifications
+WHERE studentID = 1042
+AND isRead = false
+ORDER BY createdAt ASC;
+```
+
+### Is it Accurate?
+
+✅ Yes — it correctly fetches unread notifications for student `1042`.
+
+---
+
+### Why is it Slow?
+
+**Database Size:**
+
+* 50,000 Students
+* 5,000,000 Notifications
+
+**Issues:**
+
+1. **`SELECT *`** — Fetches all columns unnecessarily, increasing I/O.
+2. **No proper index** — Database performs a full table scan across millions of rows.
+3. **Sorting (`ORDER BY createdAt`)** — Expensive without a supporting index.
+
+---
+
+## Optimization
+
+### Recommended Index
+
+```sql
+CREATE INDEX idx_student_read_created
+ON notifications(studentID, isRead, createdAt);
+```
+
+**Benefits:**
+
+* Faster filtering on `studentID` and `isRead`
+* Faster sorting on `createdAt`
+* Avoids full table scans entirely
+
+---
+
+### Optimized Query
+
+```sql
+SELECT notificationID,
+       title,
+       message,
+       createdAt
+FROM notifications
+WHERE studentID = 1042
+  AND isRead = false
+ORDER BY createdAt DESC
+LIMIT 50;
+```
+
+---
+
+## Computational Complexity
+
+| Scenario             | Complexity | Description                       |
+|----------------------|------------|-----------------------------------|
+| Without Index        | O(N)       | Scans all 5,000,000 rows          |
+| With Composite Index | O(log N)   | Direct B-tree lookup, much faster |
+
+---
+
+## Should We Add Indexes on Every Column?
+
+❌ **No.**
+
+**Problems with over-indexing:**
+
+* Consumes more storage
+* Slows down `INSERT` / `UPDATE` / `DELETE` operations
+* Unused indexes waste memory and CPU
+
+**Use indexes only on columns used in frequent queries:**
+
+```text
+studentID        → filtering by user
+isRead           → filtering unread notifications
+createdAt        → sorting and time-range queries
+notificationType → filtering by type
+```
+
+---
+
+## Placement Notification Query
+
+### Students who received Placement notifications in the last 7 days
+
+**MySQL:**
+
+```sql
+SELECT DISTINCT studentID
+FROM notifications
+WHERE notificationType = 'Placement'
+  AND createdAt >= NOW() - INTERVAL 7 DAY;
+```
+
+**PostgreSQL:**
+
+```sql
+SELECT DISTINCT studentID
+FROM notifications
+WHERE notificationType = 'Placement'
+  AND createdAt >= CURRENT_DATE - INTERVAL '7 days';
+```
