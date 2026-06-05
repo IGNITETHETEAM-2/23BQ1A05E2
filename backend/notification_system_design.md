@@ -198,6 +198,216 @@ db.notifications.deleteOne({ _id })
 | Storage bloat            | Archive old notifications to cold store |
 | High write throughput    | Database sharding by `userId`           |
 
+---
+
+# Stage 5
+
+## Problems in Current Design
+
+```
+for student_id in student_ids:
+    send_email()
+    save_to_db()
+    push_to_app()
+```
+
+Issues:
+
+- ❌ Sequential processing (slow for 50,000 users)
+- ❌ If email fails midway, system becomes inconsistent
+- ❌ Single point of failure
+- ❌ Long response time
+- ❌ No retry mechanism
+
+### What if Email Fails for 200 Students?
+
+Current system:
+
+```
+49800 students notified
+200 students missed
+```
+
+No way to recover automatically.
+
+## Better Architecture
+
+```
+HR Clicks Notify All
+        ↓
+Create Notification Job
+        ↓
+Message Queue
+(Kafka / RabbitMQ)
+        ↓
+Worker Pool
+        ↓
+├── Save Notification
+├── Send Email
+└── Push In-App Alert
+```
+
+## Should DB Save and Email Happen Together?
+
+❌ No
+
+Reason:
+
+- Email service may fail
+- DB save should succeed independently
+- Notification record should exist even if email fails
+
+Use:
+
+```
+Save to DB
+      ↓
+Publish Event
+      ↓
+Email Worker
+      ↓
+Retry if Failed
+```
+
+## Revised Pseudocode
+
+```
+def notify_all(student_ids, message):
+
+    for student_id in student_ids:
+
+        notification = save_to_db(
+            student_id,
+            message,
+            status="PENDING"
+        )
+
+        queue.publish({
+            "notificationId": notification.id
+        })
+```
+
+Worker:
+
+```
+def worker():
+
+    while True:
+
+        job = queue.consume()
+
+        try:
+            send_email(job.notificationId)
+            push_to_app(job.notificationId)
+
+            update_status(
+                job.notificationId,
+                "SENT"
+            )
+
+        except Exception:
+
+            retry(job)
+```
+
+## Benefits
+
+- ✅ Fast
+- ✅ Scalable
+- ✅ Retry support
+- ✅ Fault tolerant
+- ✅ Handles 50,000+ users
+
+---
+
+# Stage 6
+
+## Requirement
+
+Show Top **10 unread notifications** based on:
+
+```
+Priority =
+Weight + Recency
+```
+
+Weights:
+
+```
+Placement = 3
+Result    = 2
+Event     = 1
+```
+
+## JavaScript Solution
+
+```
+function getTopNotifications(notifications, n = 10) {
+
+  const weights = {
+    Placement: 3,
+    Result: 2,
+    Event: 1
+  };
+
+  return notifications
+    .filter(n => !n.isRead)
+    .map(notification => {
+
+      const days =
+        (Date.now() -
+        new Date(notification.createdAt))
+        / (1000 * 60 * 60 * 24);
+
+      const score =
+        weights[notification.type] * 100
+        - days;
+
+      return {
+        ...notification,
+        score
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, n);
+}
+```
+
+### Example
+
+```
+const notifications = [
+  {
+    id: 1,
+    type: "Placement",
+    isRead: false,
+    createdAt: "2025-06-04"
+  },
+  {
+    id: 2,
+    type: "Event",
+    isRead: false,
+    createdAt: "2025-06-05"
+  }
+];
+
+console.log(
+  getTopNotifications(notifications)
+);
+```
+
+### Explanation
+
+- Placement > Result > Event
+- Recent > Older
+- Unread only
+- Return Top 10
+
+## Submission Notes
+
+- Stage 5: Problems in Current Design, Reliable Architecture, Queue-Based Solution, Revised Pseudocode
+- Stage 6: Priority Formula, JavaScript Implementation, Complexity Analysis
+
 ```javascript
 // Recommended Indexes
 db.notifications.createIndex({ userId: 1 })
